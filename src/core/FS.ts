@@ -1,5 +1,6 @@
 import {File} from './file';
 import {ApiError, ErrorCode} from './api_error';
+import {EventEmitter} from 'events';
 import {FileSystem} from './file_system';
 import {FileFlag} from './file_flag';
 import * as path from 'path';
@@ -79,6 +80,105 @@ function normalizeOptions(options: any, defEnc: string, defFlag: string, defMode
 // The default callback is a NOP.
 function nopCb() {
   // NOP.
+}
+
+interface WritableStream {
+  write(chunk: Buffer | string, encoding: string, callback?: Function): boolean;
+  write(chunk: Buffer | string, callback?: Function): boolean;
+
+  end(chunk?: Buffer | string, encoding?: string, callback?: Function): void;
+}
+
+function _setImmediate(callback: Function) {
+  // eta-conversion is necessary to appease TypeScript.
+  Promise.resolve().then(() => callback());
+}
+
+class ReadStream extends EventEmitter {
+  public close: () => void = null;
+  public readable: boolean = false;
+
+  private filename: string;
+  private fs: FS;
+  private encoding: string;
+
+  constructor(filename: string, fs: FS) {
+    super();
+    this.filename = filename;
+    this.fs = fs;
+    this.encoding = null;
+    this.readable = false;
+
+    // Just start streaming!
+    this.read();
+  }
+
+  public setEncoding(encoding: string): void {
+    this.encoding = encoding;
+  }
+
+  public pause(): void {
+    // Ignore.
+  }
+
+  public resume(): void {
+    // Ignore.
+  }
+
+  public destroy(): void {
+    // Nothing to do.
+  }
+
+  public push(chunk: any, encoding?: string): boolean {
+    throw Error('push() not supported yet');
+  }
+
+  public read(size?: number): string | Buffer {
+    if (this.readable) {
+      return null;
+    }
+
+    if (size == null) {
+      let options = {};
+      if (this.encoding != null) {
+        (options as any).encoding = this.encoding;
+      }
+      let contents = this.fs.readFileSync(this.filename, options);
+
+      this.readable = true;
+      _setImmediate(() => this.emit('data', contents));
+      _setImmediate(() => this.emit('end'));
+
+      return contents;
+    } else {
+      throw Error('read(size) not supported yet');
+    }
+  }
+
+  public _read(size?: number): void {
+    this.read(size);
+  }
+
+  public pipe(destination: WritableStream, options?: { end?: boolean}) {
+    let contents = this.read();
+    destination.write(contents, this.encoding);
+    let endTheWriterWhenTheReaderEnds = options == null || options.end !== false;
+    if (endTheWriterWhenTheReaderEnds) {
+      destination.end();
+    }
+  }
+
+  public unpipe(destination: WritableStream): void {
+    throw Error('unpipe() not supported yet');
+  }
+
+  public unshift(chunk: Buffer | string): void {
+    throw Error('unshift() not supported yet');
+  }
+
+  public wrap(oldStream: ReadStream): ReadStream {
+    throw Error('wrap() not supported yet');
+  }
 }
 
 /**
@@ -1384,7 +1484,11 @@ export default class FS {
         mode?: number;
         autoClose?: boolean;
     }): _fs.ReadStream {
-    throw new ApiError(ErrorCode.ENOTSUP);
+    let readStream = new ReadStream(path, this);
+    if (options != null && options.encoding != null) {
+      readStream.setEncoding(options.encoding);
+    }
+    return readStream;
   }
 
   public createWriteStream(path: string, options?: {
